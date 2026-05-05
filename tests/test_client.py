@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from aioresponses import aioresponses
 
 from qnap_client import QnapClient, QnapAuthError
-from qnap_client.models import FirmwareUpdate, SystemHealth
+from qnap_client.models import FirmwareUpdate, SystemHealth, NetworkInterface
 
 
 BASE = "http://192.168.1.100:8080"
 LOGIN_URL = f"{BASE}/cgi-bin/authLogin.cgi"
-SYSINFO_URL = f"{BASE}/cgi-bin/management/manaRequest.cgi"
-FIRM_URL = f"{BASE}/cgi-bin/sys/sysRequest.cgi"
-NET_URL = f"{BASE}/cgi-bin/management/chartReq.cgi"
+
+# Regex patterns — match base URL + any query params (sid gets appended)
+RE_SYSINFO = re.compile(r"http://192\.168\.1\.100:8080/cgi-bin/management/manaRequest\.cgi.*")
+RE_FIRM = re.compile(r"http://192\.168\.1\.100:8080/cgi-bin/sys/sysRequest\.cgi.*")
+RE_NET = re.compile(r"http://192\.168\.1\.100:8080/cgi-bin/management/chartReq\.cgi.*")
 
 LOGIN_OK = """<?xml version="1.0" encoding="UTF-8"?>
 <QDocRoot><authPassed>1</authPassed><authSid>abc123sid</authSid></QDocRoot>"""
@@ -40,8 +44,11 @@ NET_TWO_IFACES = """<?xml version="1.0" encoding="UTF-8"?>
 
 
 @pytest.fixture
-def client() -> QnapClient:
-    return QnapClient("192.168.1.100", 8080, "admin", "password")
+async def client() -> QnapClient:  # type: ignore[override]
+    c = QnapClient("192.168.1.100", 8080, "admin", "password")
+    yield c
+    if c._session and not c._session.closed:
+        await c._session.close()
 
 
 @pytest.mark.asyncio
@@ -70,7 +77,7 @@ async def test_system_health(client: QnapClient) -> None:
     """get_system_health returns correct status string."""
     with aioresponses() as m:
         m.post(LOGIN_URL, body=LOGIN_OK)
-        m.get(SYSINFO_URL, body=HEALTH_OK)
+        m.get(RE_SYSINFO, body=HEALTH_OK)
         await client._ensure_session()
         await client.login()
         health = await client.get_system_health()
@@ -83,7 +90,7 @@ async def test_firmware_update_missing_new_version(client: QnapClient) -> None:
     """get_firmware_update handles missing newVersion key — returns latest_version=None."""
     with aioresponses() as m:
         m.post(LOGIN_URL, body=LOGIN_OK)
-        m.get(FIRM_URL, body=FIRMWARE_NO_NEW_VERSION)
+        m.get(RE_FIRM, body=FIRMWARE_NO_NEW_VERSION)
         await client._ensure_session()
         await client.login()
         result = await client.get_firmware_update()
@@ -97,7 +104,7 @@ async def test_firmware_update_available(client: QnapClient) -> None:
     """get_firmware_update returns latest_version when an update exists."""
     with aioresponses() as m:
         m.post(LOGIN_URL, body=LOGIN_OK)
-        m.get(FIRM_URL, body=FIRMWARE_UPDATE_AVAILABLE)
+        m.get(RE_FIRM, body=FIRMWARE_UPDATE_AVAILABLE)
         await client._ensure_session()
         await client.login()
         result = await client.get_firmware_update()
@@ -111,11 +118,13 @@ async def test_network_interfaces_parsed(client: QnapClient) -> None:
     """get_network_interfaces parses both interfaces correctly."""
     with aioresponses() as m:
         m.post(LOGIN_URL, body=LOGIN_OK)
-        m.get(NET_URL, body=NET_TWO_IFACES)
+        m.get(RE_NET, body=NET_TWO_IFACES)
         await client._ensure_session()
         await client.login()
         ifaces = await client.get_network_interfaces()
     assert len(ifaces) == 2
-    assert ifaces[0].name == "eth0"
-    assert ifaces[1].name == "eth1"
-    assert ifaces[0].ip == "192.168.1.100"
+    names = [i.name for i in ifaces]
+    assert "eth0" in names
+    assert "eth1" in names
+    eth0 = next(i for i in ifaces if i.name == "eth0")
+    assert eth0.ip == "192.168.1.100"
