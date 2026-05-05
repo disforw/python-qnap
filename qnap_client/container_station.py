@@ -125,7 +125,7 @@ class ContainerStationClient:
             Container(
                 id=c.get("id", ""),
                 name=c.get("name", ""),
-                status=c.get("status", ""),
+                state=c.get("status", c.get("state", "")),
                 image=c.get("image", ""),
                 type=c.get("type", "docker"),
             )
