@@ -1,0 +1,23 @@
+"""Exceptions for the qnap-client library."""
+
+from __future__ import annotations
+
+
+class QnapError(Exception):
+    """Base exception for all qnap-client errors."""
+
+
+class QnapAuthError(QnapError):
+    """Authentication failed — bad credentials or session expired."""
+
+
+class QnapConnectionError(QnapError):
+    """Could not connect to the NAS."""
+
+
+class QnapTimeoutError(QnapError):
+    """Request to the NAS timed out."""
+
+
+class QnapAPIError(QnapError):
+    """NAS returned an unexpected or malformed response."""
