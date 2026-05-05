@@ -121,3 +121,4 @@ class NasData:
     firmware: FirmwareUpdate | None = None
     fans: list[FanStatus] = field(default_factory=list)
     external_drives: list[ExternalDrive] = field(default_factory=list)
+    containers: list[Container] = field(default_factory=list)
