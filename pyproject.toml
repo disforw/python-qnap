@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "qnap-client"
+version = "1.0.0"
+description = "Async Python client for QNAP NAS — replaces python-qnapstats"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "disforw", email = "disforw@users.noreply.github.com" }]
+keywords = ["qnap", "nas", "homeassistant", "async", "aiohttp", "container-station"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Home Automation",
+    "Framework :: AsyncIO",
+]
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.9.0",
+    "xmltodict>=0.13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "aioresponses>=0.7",
+]
+
+[project.urls]
+Homepage = "https://github.com/disforw/python-qnap"
+Repository = "https://github.com/disforw/python-qnap"
+Issues = "https://github.com/disforw/python-qnap/issues"
+Changelog = "https://github.com/disforw/python-qnap/blob/main/CHANGELOG.md"
+
+[tool.hatch.version]
+path = "qnap_client/__init__.py"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
