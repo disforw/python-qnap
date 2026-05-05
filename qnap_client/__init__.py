@@ -13,10 +13,12 @@ from .exceptions import (
 )
 from .models import (
     Container,
+    CpuStats,
     DriveHealth,
     ExternalDrive,
     FanStatus,
     FirmwareUpdate,
+    MemoryStats,
     NasData,
     NetworkInterface,
     SystemHealth,
@@ -38,6 +40,8 @@ __all__ = [
     # Models
     "SystemInfo",
     "SystemHealth",
+    "CpuStats",
+    "MemoryStats",
     "NetworkInterface",
     "DriveHealth",
     "VolumeStats",
@@ -46,4 +50,6 @@ __all__ = [
     "ExternalDrive",
     "Container",
     "NasData",
+    # Version
+    "__version__",
 ]
