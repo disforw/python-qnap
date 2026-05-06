@@ -184,23 +184,41 @@ class QnapClient:
     async def get_system_info(self) -> SystemInfo:
         """Return basic NAS system information."""
         text = await self._get(
-            "/cgi-bin/management/manaRequest.cgi", {"subfunc": "sysinfo"}
+            "/cgi-bin/management/manaRequest.cgi",
+            {"subfunc": "sysinfo", "hd": "no", "multicpu": "1"},
         )
         root = self._root(text)
 
-        model = root.get("model", {})
-        uptime_raw = root.get("uptime", "0")
+        # qnapstats-style: data lives under func/ownContent/root
+        inner = root.get("func", {}).get("ownContent", {}).get("root", root)
+        model_info = root.get("model", {})
+        firmware_info = root.get("firmware", {})
+
+        uptime_seconds = 0
         try:
-            uptime_seconds = int(uptime_raw)
+            days = int(inner.get("uptime_day", 0))
+            hours = int(inner.get("uptime_hour", 0))
+            minutes = int(inner.get("uptime_min", 0))
+            seconds = int(inner.get("uptime_sec", 0))
+            uptime_seconds = days * 86400 + hours * 3600 + minutes * 60 + seconds
         except (ValueError, TypeError):
-            uptime_seconds = 0
+            pass
+
+        system_temp: int | None = None
+        try:
+            raw_temp = inner.get("sys_tempc")
+            if raw_temp is not None:
+                system_temp = int(raw_temp)
+        except (ValueError, TypeError):
+            pass
 
         return SystemInfo(
-            model=model.get("displayModelName", ""),
-            name=root.get("hostname", ""),
-            serial_number=root.get("serialNumber", ""),
-            firmware_version=root.get("version", ""),
+            model=model_info.get("displayModelName", inner.get("model_name", "")),
+            name=inner.get("server_name", root.get("hostname", "")),
+            serial_number=inner.get("serial_number", root.get("serialNumber", "")),
+            firmware_version=firmware_info.get("version", root.get("version", "")),
             uptime_seconds=uptime_seconds,
+            system_temp=system_temp,
         )
 
     async def get_system_health(self) -> SystemHealth:
@@ -214,17 +232,29 @@ class QnapClient:
         return SystemHealth(status=status)
 
     async def get_cpu_stats(self) -> CpuStats:
-        """Return current CPU usage percentage."""
+        """Return current CPU usage percentage and temperature."""
         text = await self._get(
-            "/cgi-bin/management/manaRequest.cgi", {"subfunc": "sysinfo"}
+            "/cgi-bin/management/manaRequest.cgi",
+            {"subfunc": "sysinfo", "hd": "no", "multicpu": "1"},
         )
         root = self._root(text)
-        cpu_usage_str = root.get("cpu", {}).get("cpu_usage", "0")
+        inner = root.get("func", {}).get("ownContent", {}).get("root", root)
+
+        cpu_usage_str = inner.get("cpu_usage", root.get("cpu", {}).get("cpu_usage", "0"))
         try:
             cpu_usage = float(str(cpu_usage_str).rstrip("%"))
         except (ValueError, TypeError):
             cpu_usage = 0.0
-        return CpuStats(usage_percent=cpu_usage)
+
+        cpu_temp: int | None = None
+        try:
+            raw_temp = inner.get("cpu_tempc")
+            if raw_temp is not None:
+                cpu_temp = int(raw_temp)
+        except (ValueError, TypeError):
+            pass
+
+        return CpuStats(usage_percent=cpu_usage, cpu_temp=cpu_temp)
 
     async def get_memory_stats(self) -> MemoryStats:
         """Return RAM stats in megabytes."""
@@ -247,33 +277,108 @@ class QnapClient:
         return MemoryStats(total_mb=total, free_mb=free, used_mb=used)
 
     async def get_network_interfaces(self) -> list[NetworkInterface]:
-        """Return stats for all active network interfaces."""
-        text = await self._get(
+        """Return stats for all active network interfaces.
+
+        Merges bandwidth data (rx/tx bytes/sec) from chartReq with
+        NIC metadata (link status, mask, max speed, packets) from sysinfo.
+        """
+        # Bandwidth data
+        bw_text = await self._get(
             "/cgi-bin/management/chartReq.cgi",
             {"chart_func": "net_usage", "disk_select": "all"},
         )
-        root = self._root(text)
-        ifaces_raw = root.get("net", {})
-        results: list[NetworkInterface] = []
+        bw_root = self._root(bw_text)
+        ifaces_bw: dict[str, dict] = bw_root.get("net", {})
 
-        if not isinstance(ifaces_raw, dict):
-            return results
+        # NIC metadata from sysinfo
+        sys_text = await self._get(
+            "/cgi-bin/management/manaRequest.cgi",
+            {"subfunc": "sysinfo", "hd": "no", "multicpu": "1"},
+        )
+        sys_root = self._root(sys_text)
+        inner = sys_root.get("func", {}).get("ownContent", {}).get("root", sys_root)
 
-        for key, val in ifaces_raw.items():
-            if not isinstance(val, dict):
-                continue
+        nic_count = 0
+        try:
+            nic_count = int(inner.get("nic_cnt", 0))
+        except (ValueError, TypeError):
+            pass
+
+        # Build sysinfo NIC map: eth0 -> {link_status, mask, max_speed, ...}
+        nic_meta: dict[str, dict] = {}
+        for nic_idx in range(nic_count):
+            i = str(nic_idx + 1)
+            iface_name = f"eth{nic_idx}"
             try:
+                status_raw = inner.get(f"eth_status{i}", "0")
+                link_status = "Up" if str(status_raw) == "1" else "Down"
+                max_speed = int(inner.get(f"eth_max_speed{i}", 0) or 0)
+                mask = inner.get(f"eth_mask{i}", "")
+                mac = inner.get(f"eth_mac{i}", "")
+                ip = inner.get(f"eth_ip{i}", "")
+                rx_packets = int(inner.get(f"rx_packet{i}", 0) or 0)
+                tx_packets = int(inner.get(f"tx_packet{i}", 0) or 0)
+                err_packets = int(inner.get(f"err_packet{i}", 0) or 0)
+                nic_meta[iface_name] = {
+                    "link_status": link_status,
+                    "mask": mask,
+                    "mac": mac,
+                    "ip": ip,
+                    "max_speed": max_speed,
+                    "rx_packets": rx_packets,
+                    "tx_packets": tx_packets,
+                    "err_packets": err_packets,
+                }
+            except (ValueError, TypeError) as exc:
+                _LOGGER.debug("Skipping NIC meta for %s: %s", iface_name, exc)
+
+        # Merge bandwidth + metadata
+        results: list[NetworkInterface] = []
+        seen: set[str] = set()
+
+        if isinstance(ifaces_bw, dict):
+            for key, val in ifaces_bw.items():
+                if not isinstance(val, dict):
+                    continue
+                meta = nic_meta.get(key, {})
+                try:
+                    results.append(
+                        NetworkInterface(
+                            name=key,
+                            mac=meta.get("mac", val.get("mac", "")),
+                            ip=meta.get("ip", val.get("ip", "")),
+                            rx_bytes_per_sec=float(val.get("rx", 0)),
+                            tx_bytes_per_sec=float(val.get("tx", 0)),
+                            link_status=meta.get("link_status", "Unknown"),
+                            mask=meta.get("mask", ""),
+                            max_speed=meta.get("max_speed", 0),
+                            rx_packets=meta.get("rx_packets", 0),
+                            tx_packets=meta.get("tx_packets", 0),
+                            err_packets=meta.get("err_packets", 0),
+                        )
+                    )
+                    seen.add(key)
+                except (ValueError, TypeError) as exc:
+                    _LOGGER.debug("Skipping interface %s: %s", key, exc)
+
+        # Add any NICs from sysinfo that weren't in bandwidth data
+        for iface_name, meta in nic_meta.items():
+            if iface_name not in seen:
                 results.append(
                     NetworkInterface(
-                        name=key,
-                        mac=val.get("mac", ""),
-                        ip=val.get("ip", ""),
-                        rx_bytes_per_sec=float(val.get("rx", 0)),
-                        tx_bytes_per_sec=float(val.get("tx", 0)),
+                        name=iface_name,
+                        mac=meta.get("mac", ""),
+                        ip=meta.get("ip", ""),
+                        rx_bytes_per_sec=0.0,
+                        tx_bytes_per_sec=0.0,
+                        link_status=meta.get("link_status", "Unknown"),
+                        mask=meta.get("mask", ""),
+                        max_speed=meta.get("max_speed", 0),
+                        rx_packets=meta.get("rx_packets", 0),
+                        tx_packets=meta.get("tx_packets", 0),
+                        err_packets=meta.get("err_packets", 0),
                     )
                 )
-            except (ValueError, TypeError) as exc:
-                _LOGGER.debug("Skipping interface %s: %s", key, exc)
 
         return results
 
@@ -350,9 +455,23 @@ class QnapClient:
             "/cgi-bin/sys/sysRequest.cgi", {"subfunc": "firm_update"}
         )
         root = self._root(text)
-        firm = root.get("firmware", root)
-        current = firm.get("curVersion", firm.get("version", ""))
-        latest = firm.get("newVersion") or None  # None if missing or empty string
+
+        # Response can be nested under func/ownContent or at root level
+        content = root.get("func", {}).get("ownContent", root)
+        firmware_root = content.get("firmware", content)
+
+        # Current version: look in multiple places
+        current = (
+            firmware_root.get("curVersion")
+            or firmware_root.get("version")
+            or root.get("firmware", {}).get("version", "")
+            or ""
+        )
+        # Latest version: only set if a newer version is available
+        latest = firmware_root.get("newVersion") or content.get("newVersion") or None
+        if latest == "" or latest == current:
+            latest = None
+
         return FirmwareUpdate(current_version=current, latest_version=latest)
 
     async def get_fans(self) -> list[FanStatus]:
@@ -448,7 +567,7 @@ class QnapClient:
         return NasData(
             system_info=_unwrap(system_info, SystemInfo("", "", "", "", 0)),
             system_health=_unwrap(system_health, SystemHealth("Unknown")),
-            cpu=_unwrap(cpu, CpuStats(0.0)),
+            cpu=_unwrap(cpu, CpuStats(usage_percent=0.0)),
             memory=_unwrap(memory, MemoryStats(0, 0, 0)),
             network_interfaces=_unwrap(network_interfaces, []),
             drives=_unwrap(drives, []),

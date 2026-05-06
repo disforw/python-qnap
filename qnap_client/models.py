@@ -14,6 +14,7 @@ class SystemInfo:
     serial_number: str
     firmware_version: str
     uptime_seconds: int
+    system_temp: int | None = None
 
 
 @dataclass
@@ -28,6 +29,7 @@ class CpuStats:
     """CPU utilisation."""
 
     usage_percent: float
+    cpu_temp: int | None = None
 
 
 @dataclass
@@ -48,6 +50,12 @@ class NetworkInterface:
     ip: str
     rx_bytes_per_sec: float
     tx_bytes_per_sec: float
+    link_status: str = "Unknown"
+    mask: str = ""
+    max_speed: int = 0
+    rx_packets: int = 0
+    tx_packets: int = 0
+    err_packets: int = 0
 
 
 @dataclass

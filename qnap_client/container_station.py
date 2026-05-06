@@ -27,6 +27,9 @@ class ContainerStationClient:
     Requires an authenticated QnapClient instance — reuses its aiohttp
     session and host/port/ssl configuration.
 
+    All requests use the QTS SID as a Bearer token (no separate CS login).
+    This works on QTS 5.x and Container Station 3.x.
+
     Usage::
 
         async with QnapClient(...) as client:
@@ -38,47 +41,17 @@ class ContainerStationClient:
     def __init__(self, client: QnapClient) -> None:
         """Initialize using an authenticated QnapClient."""
         self._client = client
-        self._cs_session_cookie: str | None = None
 
         scheme = "https" if client._ssl else "http"  # noqa: SLF001
         base = f"{scheme}://{client._host}:{client._port}/container-station/api"  # noqa: SLF001
         self._base_v3 = f"{base}/v3"
-        self._base_v1 = f"{base}/v1"
 
-    # ------------------------------------------------------------------
-    # CS cookie auth (for v1 action endpoints)
-    # ------------------------------------------------------------------
-
-    async def _ensure_cs_auth(self) -> str:
-        """Return a valid CS_SESS_ID cookie, logging in if needed."""
-        if self._cs_session_cookie:
-            return self._cs_session_cookie
-
-        session = await self._client._ensure_session()  # noqa: SLF001
-        try:
-            async with session.post(
-                f"{self._base_v1}/login",
-                json={
-                    "username": self._client._username,  # noqa: SLF001
-                    "password": self._client._password,  # noqa: SLF001
-                },
-            ) as resp:
-                if resp.status != 200:
-                    raise QnapAuthError(
-                        f"Container Station login failed: HTTP {resp.status}"
-                    )
-                cookie = resp.cookies.get("CS_SESS_ID")
-                if not cookie:
-                    body = await resp.text()
-                    raise QnapAuthError(
-                        f"Container Station login: no session cookie returned. Body: {body[:200]}"
-                    )
-                self._cs_session_cookie = cookie.value
-                return self._cs_session_cookie
-        except aiohttp.ClientConnectorError as err:
-            raise QnapConnectionError(
-                f"Cannot connect to Container Station: {err}"
-            ) from err
+    def _bearer_headers(self) -> dict[str, str]:
+        """Return Authorization header using current QTS SID."""
+        sid = self._client._sid  # noqa: SLF001
+        if sid is None:
+            raise QnapAuthError("QnapClient is not authenticated")
+        return {"Authorization": f"Bearer {sid}"}
 
     # ------------------------------------------------------------------
     # Public API
@@ -87,8 +60,7 @@ class ContainerStationClient:
     async def get_containers(self) -> list[Container]:
         """Return all containers with id, name, status, image, type.
 
-        Uses the v3 API with the QTS SID (Bearer token) from the parent
-        QnapClient — no separate Container Station login needed.
+        Uses the v3 API with the QTS SID (Bearer token).
 
         Returns:
             List of Container dataclasses.
@@ -96,17 +68,13 @@ class ContainerStationClient:
         Raises:
             QnapAuthError: If not authenticated.
             QnapAPIError: On bad response.
+            QnapConnectionError: On network failure.
         """
-        if self._client._sid is None:  # noqa: SLF001
-            raise QnapAuthError("QnapClient is not authenticated")
-
         session = await self._client._ensure_session()  # noqa: SLF001
-        headers = {"Authorization": f"Bearer {self._client._sid}"}  # noqa: SLF001
-
         try:
             async with session.get(
                 f"{self._base_v3}/containers",
-                headers=headers,
+                headers=self._bearer_headers(),
             ) as resp:
                 if resp.status == 401:
                     raise QnapAuthError("Container Station: Bearer token rejected")
@@ -135,7 +103,7 @@ class ContainerStationClient:
     async def container_action(
         self, container_id: str, container_type: str, action: str
     ) -> None:
-        """Perform an action on a container.
+        """Perform an action on a container using the v3 API (Bearer token).
 
         Args:
             container_id: Container ID from get_containers().
@@ -146,41 +114,48 @@ class ContainerStationClient:
             ValueError: If action is not valid.
             QnapAuthError: If authentication fails.
             QnapAPIError: If the action fails.
+            QnapConnectionError: On network failure.
         """
         if action not in ("start", "stop", "restart"):
-            raise ValueError(f"Invalid container action: {action!r}. Must be start, stop, or restart.")
+            raise ValueError(
+                f"Invalid container action: {action!r}. Must be start, stop, or restart."
+            )
 
-        cookie = await self._ensure_cs_auth()
         session = await self._client._ensure_session()  # noqa: SLF001
-        url = f"{self._base_v1}/container/{container_type}/{container_id}/{action}"
-        headers = {"Cookie": f"CS_SESS_ID={cookie}"}
+        url = f"{self._base_v3}/containers/{container_type}/{container_id}/{action}"
 
-        async with session.put(url, headers=headers) as resp:
-            if resp.status == 401:
-                # Session expired — clear and retry once
-                self._cs_session_cookie = None
-                cookie = await self._ensure_cs_auth()
-                headers = {"Cookie": f"CS_SESS_ID={cookie}"}
-                async with session.put(url, headers=headers) as retry_resp:
-                    if retry_resp.status not in (200, 204):
-                        raise QnapAPIError(
-                            f"Container {action} failed after retry: HTTP {retry_resp.status}"
-                        )
-                return
+        try:
+            async with session.post(
+                url, headers=self._bearer_headers()
+            ) as resp:
+                if resp.status == 401:
+                    raise QnapAuthError(
+                        f"Container Station: Bearer token rejected for {action}"
+                    )
+                if resp.status not in (200, 204):
+                    body = await resp.text()
+                    raise QnapAPIError(
+                        f"Container {action} failed: HTTP {resp.status} — {body[:200]}"
+                    )
+        except aiohttp.ClientConnectorError as err:
+            raise QnapConnectionError(
+                f"Cannot connect to Container Station: {err}"
+            ) from err
 
-            if resp.status not in (200, 204):
-                raise QnapAPIError(
-                    f"Container {action} failed: HTTP {resp.status}"
-                )
-
-    async def start_container(self, container_id: str, container_type: str = "docker") -> None:
+    async def start_container(
+        self, container_id: str, container_type: str = "docker"
+    ) -> None:
         """Start a container."""
         await self.container_action(container_id, container_type, "start")
 
-    async def stop_container(self, container_id: str, container_type: str = "docker") -> None:
+    async def stop_container(
+        self, container_id: str, container_type: str = "docker"
+    ) -> None:
         """Stop a container."""
         await self.container_action(container_id, container_type, "stop")
 
-    async def restart_container(self, container_id: str, container_type: str = "docker") -> None:
+    async def restart_container(
+        self, container_id: str, container_type: str = "docker"
+    ) -> None:
         """Restart a container."""
         await self.container_action(container_id, container_type, "restart")
