@@ -60,7 +60,7 @@ class ContainerStationClient:
                 f"{self._base_v1}/login",
                 json={
                     "username": self._client._username,  # noqa: SLF001
-                    "password": self._client._password_b64,  # noqa: SLF001
+                    "password": self._client._password,  # noqa: SLF001
                 },
             ) as resp:
                 if resp.status != 200:
@@ -125,7 +125,7 @@ class ContainerStationClient:
             Container(
                 id=c.get("id", ""),
                 name=c.get("name", ""),
-                status=c.get("status", ""),
+                state=c.get("status", c.get("state", "")),
                 image=c.get("image", ""),
                 type=c.get("type", "docker"),
             )

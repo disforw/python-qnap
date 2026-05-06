@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "qnap-client"
-version = "1.0.0"
+version = "1.0.3"
 description = "Async Python client for QNAP NAS — replaces python-qnapstats"
 readme = "README.md"
 license = { text = "MIT" }

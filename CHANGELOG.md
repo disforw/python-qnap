@@ -2,6 +2,23 @@
 
 All notable changes to `qnap-client` will be documented here.
 
+## [1.0.3] - 2026-05-05
+
+### Fixed
+- `ContainerStationClient._ensure_cs_auth()` was referencing `_password_b64` on `QnapClient`,
+  which does not exist. Changed to `_password` (the correct attribute). This caused `AttributeError`
+  when trying to start/stop containers via Container Station v1 API.
+
+## [1.0.2] - 2026-05-05
+
+### Added
+- `Container.state` field (renamed from `status`) — `get_containers()` now maps the raw API
+  `status` field to `state` for consistency with the model naming
+- `NasData.containers` field — coordinator now populates containers directly on `NasData`
+
+### Changed
+- `get_containers()` reads `state` key first, falls back to `status` key from QNAP API response
+
 ## [1.0.0] - 2026-05-05
 
 Initial release. Full async rewrite replacing `python-qnapstats`.
