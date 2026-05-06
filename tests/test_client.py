@@ -42,6 +42,34 @@ NET_TWO_IFACES = """<?xml version="1.0" encoding="UTF-8"?>
   </net>
 </QDocRoot>"""
 
+# Sysinfo response with NIC metadata (nic_cnt=2, two NICs with link status/mask/speed)
+SYSINFO_NIC_META = """<?xml version="1.0" encoding="UTF-8"?>
+<QDocRoot>
+  <func>
+    <ownContent>
+      <root>
+        <nic_cnt>2</nic_cnt>
+        <eth_status1>1</eth_status1>
+        <eth_max_speed1>1000</eth_max_speed1>
+        <eth_mask1>255.255.255.0</eth_mask1>
+        <eth_mac1>00:11:22:33:44:55</eth_mac1>
+        <eth_ip1>192.168.1.100</eth_ip1>
+        <rx_packet1>1000</rx_packet1>
+        <tx_packet1>2000</tx_packet1>
+        <err_packet1>0</err_packet1>
+        <eth_status2>1</eth_status2>
+        <eth_max_speed2>1000</eth_max_speed2>
+        <eth_mask2>255.255.255.0</eth_mask2>
+        <eth_mac2>00:11:22:33:44:56</eth_mac2>
+        <eth_ip2>192.168.1.101</eth_ip2>
+        <rx_packet2>500</rx_packet2>
+        <tx_packet2>300</tx_packet2>
+        <err_packet2>0</err_packet2>
+      </root>
+    </ownContent>
+  </func>
+</QDocRoot>"""
+
 
 @pytest.fixture
 async def client() -> QnapClient:  # type: ignore[override]
@@ -115,10 +143,11 @@ async def test_firmware_update_available(client: QnapClient) -> None:
 
 @pytest.mark.asyncio
 async def test_network_interfaces_parsed(client: QnapClient) -> None:
-    """get_network_interfaces parses both interfaces correctly."""
+    """get_network_interfaces parses both interfaces correctly, including NIC metadata."""
     with aioresponses() as m:
         m.post(LOGIN_URL, body=LOGIN_OK)
         m.get(RE_NET, body=NET_TWO_IFACES)
+        m.get(RE_SYSINFO, body=SYSINFO_NIC_META)
         await client._ensure_session()
         await client.login()
         ifaces = await client.get_network_interfaces()
@@ -128,3 +157,6 @@ async def test_network_interfaces_parsed(client: QnapClient) -> None:
     assert "eth1" in names
     eth0 = next(i for i in ifaces if i.name == "eth0")
     assert eth0.ip == "192.168.1.100"
+    assert eth0.link_status == "Up"
+    assert eth0.max_speed == 1000
+    assert eth0.mask == "255.255.255.0"
